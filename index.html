@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Atril — práctica de dibujo con referencias</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -133,7 +133,7 @@ input[type=range]::-moz-range-thumb{
 #top-bar{
   display:flex; align-items:center; gap:16px;
   padding:12px 20px;
-  padding-top:max(12px, env(safe-area-inset-top));
+  padding-top:max(20px, env(safe-area-inset-top));
   background:var(--bg-elev);
   border-bottom:1px solid var(--border);
   flex:0 0 auto;
@@ -366,7 +366,7 @@ input[type=range]::-moz-range-thumb{
     <span class="counter" id="image-counter">1 / 1</span>
     <div class="progress-wrap"><div class="progress-fill" id="image-progress-fill"></div></div>
     <span class="session-time" id="session-time-left">00:00</span>
-    <button id="toolbar-toggle-btn" title="Herramientas"><span>🛠</span> Herramientas</button>
+    <button id="toolbar-toggle-btn" title="Herramientas">Herramientas</button>
     <button id="exit-btn" title="Terminar y volver al inicio">Salir</button>
   </div>
 
