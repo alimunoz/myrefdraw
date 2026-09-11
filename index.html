@@ -142,6 +142,11 @@ input[type=range]::-moz-range-thumb{
 .progress-fill{ height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
 #exit-btn{ background:none; border:none; color:var(--muted); font-size:13px; cursor:pointer; padding:4px 6px;}
 #exit-btn:hover{ color:var(--paper); }
+#toolbar-toggle-btn{
+  display:none; background:none; border:1px solid var(--border); color:var(--paper);
+  font-size:15px; cursor:pointer; padding:5px 10px; border-radius:var(--radius); flex:0 0 auto;
+}
+#toolbar-toggle-btn.active{ border-color:var(--accent); color:var(--accent); }
 
 #stage-wrap{
   flex:1; min-height:0;
@@ -153,15 +158,23 @@ input[type=range]::-moz-range-thumb{
   position:relative;
   background:#100e0c;
   overflow:hidden;
+  touch-action:none;
 }
 #ref-image-plain{
   max-width:96%; max-height:96%;
   object-fit:contain;
   box-shadow:0 20px 50px rgba(0,0,0,.5);
+  touch-action:none;
 }
 #canvas-stack{
   position:relative;
   box-shadow:0 20px 50px rgba(0,0,0,.5);
+}
+#zoom-reset-btn{
+  position:absolute; top:12px; right:12px; z-index:10;
+  background:var(--bg-elev); border:1px solid var(--accent); color:var(--paper);
+  font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
+  box-shadow:var(--shadow);
 }
 #canvas-stack canvas{
   position:absolute; top:0; left:0;
@@ -249,9 +262,31 @@ input[type=range]::-moz-range-thumb{
 .end-actions{ display:flex; gap:10px; }
 
 @media (max-width: 760px){
-  #stage-wrap{ flex-direction:column; }
-  #toolbar{ flex:0 0 auto; width:100%; border-left:none; border-top:1px solid var(--border); max-height:44vh; }
+  #toolbar-toggle-btn{ display:inline-flex; align-items:center; justify-content:center; }
+  #top-bar{ padding:10px 14px; gap:10px; }
+  #top-bar .counter{ font-size:12px; }
+  #top-bar .session-time{ font-size:12px; }
+
+  #stage-wrap{ position:relative; }
+
+  /* Toolbar becomes a collapsible drawer that overlays the canvas
+     instead of squeezing it, so drawing space stays full-size. */
+  #toolbar-backdrop{
+    position:fixed; inset:0; background:rgba(10,9,8,.45); z-index:29;
+  }
+  #toolbar{
+    position:absolute; top:0; left:0; right:0; z-index:30;
+    width:100%; border-left:none; border-top:1px solid var(--border);
+    max-height:60vh; overflow-y:auto;
+    border-radius:0 0 10px 10px; box-shadow:var(--shadow);
+    transform:translateY(-100%); transition:transform .22s ease;
+    padding:14px 14px 16px;
+  }
+  #toolbar.toolbar-open{ transform:translateY(0); }
+  .tool-section{ margin-bottom:16px; }
+
   .ctrl-btn{ padding:8px 12px; min-width:70px; }
+  #bottom-bar{ padding:10px 14px; gap:6px; }
 }
 </style>
 </head>
@@ -308,6 +343,7 @@ input[type=range]::-moz-range-thumb{
     <span class="counter" id="image-counter">1 / 1</span>
     <div class="progress-wrap"><div class="progress-fill" id="image-progress-fill"></div></div>
     <span class="session-time" id="session-time-left">00:00</span>
+    <button id="toolbar-toggle-btn" title="Herramientas">🛠</button>
     <button id="exit-btn" title="Terminar y volver al inicio">Salir</button>
   </div>
 
@@ -322,8 +358,10 @@ input[type=range]::-moz-range-thumb{
         <canvas class="draw-layer" data-layer="3"></canvas>
         <canvas class="draw-layer" data-layer="4"></canvas>
       </div>
+      <button id="zoom-reset-btn" class="hidden" title="Restablecer zoom">100% ↺</button>
     </div>
 
+    <div id="toolbar-backdrop" class="hidden"></div>
     <div id="toolbar" class="hidden">
       <div class="tool-section">
         <h3>Capas</h3>
@@ -424,6 +462,9 @@ input[type=range]::-moz-range-thumb{
     imgNatural: { w: 0, h: 0 },
     drawing: false,
     lastPoint: null,
+    zoom: { scale: 1, x: 0, y: 0 },
+    pinch: { active: false, startDist: 0, startScale: 1, startMid: {x:0,y:0}, startTranslate: {x:0,y:0} },
+    activePointers: new Map(),
   };
 
   /* ---------------- Elements ---------------- */
@@ -454,7 +495,11 @@ input[type=range]::-moz-range-thumb{
   const refImagePlain = el('ref-image-plain');
   const canvasStack = el('canvas-stack');
   const refCanvas = el('ref-canvas');
+  const stageEl = el('stage');
   const toolbar = el('toolbar');
+  const toolbarToggleBtn = el('toolbar-toggle-btn');
+  const toolbarBackdrop = el('toolbar-backdrop');
+  const zoomResetBtn = el('zoom-reset-btn');
   const layerTabs = document.querySelectorAll('.layer-tab');
   const layerHideBtn = el('layer-hide-btn');
   const layerClearBtn = el('layer-clear-btn');
@@ -574,6 +619,23 @@ input[type=range]::-moz-range-thumb{
 
   pickFolderBtn.addEventListener('click', pickFolder);
 
+  /* ---------------- Mobile: collapsible toolbar drawer ---------------- */
+  function openToolbar(){
+    toolbar.classList.add('toolbar-open');
+    toolbarBackdrop.classList.remove('hidden');
+    toolbarToggleBtn.classList.add('active');
+  }
+  function closeToolbar(){
+    toolbar.classList.remove('toolbar-open');
+    toolbarBackdrop.classList.add('hidden');
+    toolbarToggleBtn.classList.remove('active');
+  }
+  toolbarToggleBtn.addEventListener('click', () => {
+    if(toolbar.classList.contains('toolbar-open')) closeToolbar();
+    else openToolbar();
+  });
+  toolbarBackdrop.addEventListener('click', closeToolbar);
+
   /* ---------------- Setup: sliders ---------------- */
   imageDurationRange.addEventListener('input', () => {
     imageDurationValue.textContent = fmtDurationLabel(+imageDurationRange.value);
@@ -605,11 +667,15 @@ input[type=range]::-moz-range-thumb{
       refImagePlain.classList.add('hidden');
       canvasStack.classList.remove('hidden');
       toolbar.classList.remove('hidden');
+      toolbarToggleBtn.classList.remove('hidden');
     } else {
       refImagePlain.classList.remove('hidden');
       canvasStack.classList.add('hidden');
       toolbar.classList.add('hidden');
+      toolbarToggleBtn.classList.add('hidden');
     }
+    closeToolbar();
+    resetZoom();
 
     btnPause.querySelector('.icon').textContent = '⏸';
     btnPause.lastChild.textContent = 'Pausar';
@@ -672,6 +738,7 @@ input[type=range]::-moz-range-thumb{
     const n = state.images.length;
     state.index = ((newIndex % n) + n) % n;
     state.imageRemaining = state.config.imageSeconds;
+    resetZoom();
     loadCurrentImage();
     updateTopBar();
   }
@@ -840,10 +907,80 @@ input[type=range]::-moz-range-thumb{
     c.getContext('2d').putImageData(data, 0, 0);
   });
 
+  /* ---------------- Zoom & pan (2-finger pinch/pan on the stage) ---------------- */
+  function applyZoomTransform(){
+    const t = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.scale})`;
+    canvasStack.style.transform = t;
+    refImagePlain.style.transform = t;
+    const isDefault = state.zoom.scale <= 1.02 && Math.abs(state.zoom.x) < 1 && Math.abs(state.zoom.y) < 1;
+    zoomResetBtn.classList.toggle('hidden', isDefault);
+    zoomResetBtn.textContent = Math.round(state.zoom.scale * 100) + '% ↺';
+  }
+  function resetZoom(){
+    state.zoom.scale = 1; state.zoom.x = 0; state.zoom.y = 0;
+    canvasStack.style.transform = '';
+    refImagePlain.style.transform = '';
+    zoomResetBtn.classList.add('hidden');
+  }
+  zoomResetBtn.addEventListener('click', resetZoom);
+
+  function clampPan(){
+    const maxOffsetX = (stageEl.clientWidth * (state.zoom.scale - 1)) / 2 + 60;
+    const maxOffsetY = (stageEl.clientHeight * (state.zoom.scale - 1)) / 2 + 60;
+    state.zoom.x = Math.max(-maxOffsetX, Math.min(maxOffsetX, state.zoom.x));
+    state.zoom.y = Math.max(-maxOffsetY, Math.min(maxOffsetY, state.zoom.y));
+  }
+  function ptDist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+  function ptMid(a, b){ return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+  stageEl.addEventListener('pointerdown', (e) => {
+    state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if(state.activePointers.size === 2){
+      // A second finger landed: cancel any single-finger stroke in progress
+      // and start a pinch-zoom / 2-finger pan gesture instead.
+      state.drawing = false;
+      const pts = [...state.activePointers.values()];
+      state.pinch.active = true;
+      state.pinch.startDist = ptDist(pts[0], pts[1]) || 1;
+      state.pinch.startScale = state.zoom.scale;
+      state.pinch.startMid = ptMid(pts[0], pts[1]);
+      state.pinch.startTranslate = { x: state.zoom.x, y: state.zoom.y };
+    }
+  });
+  stageEl.addEventListener('pointermove', (e) => {
+    if(!state.activePointers.has(e.pointerId)) return;
+    state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if(state.pinch.active && state.activePointers.size === 2){
+      const pts = [...state.activePointers.values()];
+      const newDist = ptDist(pts[0], pts[1]) || 1;
+      const newMid = ptMid(pts[0], pts[1]);
+      let newScale = state.pinch.startScale * (newDist / state.pinch.startDist);
+      newScale = Math.max(1, Math.min(5, newScale));
+      state.zoom.scale = newScale;
+      state.zoom.x = state.pinch.startTranslate.x + (newMid.x - state.pinch.startMid.x);
+      state.zoom.y = state.pinch.startTranslate.y + (newMid.y - state.pinch.startMid.y);
+      clampPan();
+      applyZoomTransform();
+      e.preventDefault();
+    }
+  });
+  function stagePointerEnd(e){
+    state.activePointers.delete(e.pointerId);
+    if(state.activePointers.size < 2){
+      state.pinch.active = false;
+    }
+  }
+  stageEl.addEventListener('pointerup', stagePointerEnd);
+  stageEl.addEventListener('pointercancel', stagePointerEnd);
+  stageEl.addEventListener('pointerleave', stagePointerEnd);
+
   /* ---------------- Drawing ---------------- */
   function getPos(e, canvas){
     const rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // rect is the on-screen (post CSS-transform) box; divide out the zoom
+    // scale so drawing coordinates stay in the canvas's own pixel space.
+    const s = state.zoom.scale || 1;
+    return { x: (e.clientX - rect.left) / s, y: (e.clientY - rect.top) / s };
   }
 
   function applyBrushStyle(ctx){
@@ -884,6 +1021,7 @@ input[type=range]::-moz-range-thumb{
   drawLayers.forEach(canvas => {
     canvas.addEventListener('pointerdown', (e) => {
       if(!canvas.classList.contains('active-layer')) return;
+      if(!e.isPrimary || state.pinch.active || state.activePointers.size >= 2) return; // let 2nd finger pinch/pan instead of drawing
       const idx = +canvas.dataset.layer;
       pushUndoSnapshot(idx);
       state.drawing = true;
@@ -899,6 +1037,7 @@ input[type=range]::-moz-range-thumb{
     });
     canvas.addEventListener('pointermove', (e) => {
       if(!state.drawing || !canvas.classList.contains('active-layer')) return;
+      if(!e.isPrimary || state.pinch.active) return;
       const pos = getPos(e, canvas);
       const ctx = canvas.getContext('2d');
       applyBrushStyle(ctx);
