@@ -144,9 +144,21 @@ input[type=range]::-moz-range-thumb{
 #exit-btn:hover{ color:var(--paper); }
 #toolbar-toggle-btn{
   display:none; background:none; border:1px solid var(--border); color:var(--paper);
-  font-size:15px; cursor:pointer; padding:5px 10px; border-radius:var(--radius); flex:0 0 auto;
+  font-size:13px; cursor:pointer; padding:7px 12px; border-radius:999px; flex:0 0 auto;
+  align-items:center; gap:6px; white-space:nowrap;
 }
-#toolbar-toggle-btn.active{ border-color:var(--accent); color:var(--accent); }
+#toolbar-toggle-btn span{ font-size:14px; }
+#toolbar-toggle-btn.active{ border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+
+.toolbar-header{ display:none; }
+.toolbar-tabs{ display:flex; gap:6px; overflow-x:auto; flex:1; -ms-overflow-style:none; scrollbar-width:none; }
+.toolbar-tabs::-webkit-scrollbar{ display:none; }
+.toolbar-tab{
+  background:var(--bg-elev-2); border:1px solid var(--border); color:var(--muted);
+  padding:8px 14px; border-radius:999px; font-size:12.5px; white-space:nowrap; cursor:pointer; flex:0 0 auto;
+}
+.toolbar-tab.active{ border-color:var(--accent); color:var(--paper); background:var(--accent-soft); }
+#toolbar-close-btn{ background:none; border:none; color:var(--muted); font-size:17px; cursor:pointer; padding:4px 8px; flex:0 0 auto; }
 
 #stage-wrap{
   flex:1; min-height:0;
@@ -263,7 +275,7 @@ input[type=range]::-moz-range-thumb{
 
 @media (max-width: 760px){
   #toolbar-toggle-btn{ display:inline-flex; align-items:center; justify-content:center; }
-  #top-bar{ padding:10px 14px; gap:10px; }
+  #top-bar{ padding:10px 14px; gap:8px; }
   #top-bar .counter{ font-size:12px; }
   #top-bar .session-time{ font-size:12px; }
 
@@ -277,13 +289,23 @@ input[type=range]::-moz-range-thumb{
   #toolbar{
     position:absolute; top:0; left:0; right:0; z-index:30;
     width:100%; border-left:none; border-top:1px solid var(--border);
-    max-height:60vh; overflow-y:auto;
+    max-height:70vh; overflow-y:auto;
     border-radius:0 0 10px 10px; box-shadow:var(--shadow);
     transform:translateY(-100%); transition:transform .22s ease;
-    padding:14px 14px 16px;
+    padding:14px 14px 20px;
   }
   #toolbar.toolbar-open{ transform:translateY(0); }
-  .tool-section{ margin-bottom:16px; }
+
+  /* Sections become tabbed panes on mobile: only the selected one shows,
+     so nothing is hidden below an unnoticed scroll area. */
+  .toolbar-header{
+    display:flex; align-items:center; gap:8px;
+    margin:-2px -2px 14px; padding-bottom:10px;
+    border-bottom:1px solid var(--border);
+    position:sticky; top:-14px; background:var(--bg-elev); z-index:2;
+  }
+  .tool-section{ display:none; }
+  .tool-section.tab-active{ display:block; }
 
   .ctrl-btn{ padding:8px 12px; min-width:70px; }
   #bottom-bar{ padding:10px 14px; gap:6px; }
@@ -343,7 +365,7 @@ input[type=range]::-moz-range-thumb{
     <span class="counter" id="image-counter">1 / 1</span>
     <div class="progress-wrap"><div class="progress-fill" id="image-progress-fill"></div></div>
     <span class="session-time" id="session-time-left">00:00</span>
-    <button id="toolbar-toggle-btn" title="Herramientas">🛠</button>
+    <button id="toolbar-toggle-btn" title="Herramientas"><span>🛠</span> Herramientas</button>
     <button id="exit-btn" title="Terminar y volver al inicio">Salir</button>
   </div>
 
@@ -363,7 +385,17 @@ input[type=range]::-moz-range-thumb{
 
     <div id="toolbar-backdrop" class="hidden"></div>
     <div id="toolbar" class="hidden">
-      <div class="tool-section">
+      <div class="toolbar-header">
+        <div class="toolbar-tabs" id="toolbar-tabs">
+          <button class="toolbar-tab active" data-section="capas">Capas</button>
+          <button class="toolbar-tab" data-section="referencia">Referencia</button>
+          <button class="toolbar-tab" data-section="pincel">Pincel</button>
+          <button class="toolbar-tab" data-section="historial">Deshacer</button>
+        </div>
+        <button id="toolbar-close-btn" title="Cerrar">✕</button>
+      </div>
+
+      <div class="tool-section tab-active" data-section="capas">
         <h3>Capas</h3>
         <div class="layer-tabs" id="layer-tabs">
           <button class="layer-tab active" data-layer="0">1</button>
@@ -378,7 +410,7 @@ input[type=range]::-moz-range-thumb{
         </div>
       </div>
 
-      <div class="tool-section">
+      <div class="tool-section" data-section="referencia">
         <h3>Referencia</h3>
         <div class="ref-opacity-row">
           <button class="small-btn" id="ref-opacity-down">−</button>
@@ -387,7 +419,7 @@ input[type=range]::-moz-range-thumb{
         </div>
       </div>
 
-      <div class="tool-section">
+      <div class="tool-section" data-section="pincel">
         <h3>Pincel</h3>
         <div class="brush-types">
           <button class="brush-type active" data-brush="pencil">Lápiz</button>
@@ -411,7 +443,7 @@ input[type=range]::-moz-range-thumb{
         </div>
       </div>
 
-      <div class="tool-section">
+      <div class="tool-section" data-section="historial">
         <h3>Historial</h3>
         <div class="layer-row">
           <button class="small-btn" id="undo-btn">Deshacer</button>
@@ -462,6 +494,7 @@ input[type=range]::-moz-range-thumb{
     imgNatural: { w: 0, h: 0 },
     drawing: false,
     lastPoint: null,
+    strokePoints: [],
     zoom: { scale: 1, x: 0, y: 0 },
     pinch: { active: false, startDist: 0, startScale: 1, startMid: {x:0,y:0}, startTranslate: {x:0,y:0} },
     activePointers: new Map(),
@@ -499,6 +532,9 @@ input[type=range]::-moz-range-thumb{
   const toolbar = el('toolbar');
   const toolbarToggleBtn = el('toolbar-toggle-btn');
   const toolbarBackdrop = el('toolbar-backdrop');
+  const toolbarCloseBtn = el('toolbar-close-btn');
+  const toolbarTabs = document.querySelectorAll('.toolbar-tab');
+  const toolSections = document.querySelectorAll('.tool-section');
   const zoomResetBtn = el('zoom-reset-btn');
   const layerTabs = document.querySelectorAll('.layer-tab');
   const layerHideBtn = el('layer-hide-btn');
@@ -624,6 +660,7 @@ input[type=range]::-moz-range-thumb{
     toolbar.classList.add('toolbar-open');
     toolbarBackdrop.classList.remove('hidden');
     toolbarToggleBtn.classList.add('active');
+    toolbar.scrollTop = 0;
   }
   function closeToolbar(){
     toolbar.classList.remove('toolbar-open');
@@ -635,6 +672,16 @@ input[type=range]::-moz-range-thumb{
     else openToolbar();
   });
   toolbarBackdrop.addEventListener('click', closeToolbar);
+  toolbarCloseBtn.addEventListener('click', closeToolbar);
+
+  function setToolbarSection(name){
+    toolbarTabs.forEach(t => t.classList.toggle('active', t.dataset.section === name));
+    toolSections.forEach(s => s.classList.toggle('tab-active', s.dataset.section === name));
+    toolbar.scrollTop = 0;
+  }
+  toolbarTabs.forEach(tab => {
+    tab.addEventListener('click', () => setToolbarSection(tab.dataset.section));
+  });
 
   /* ---------------- Setup: sliders ---------------- */
   imageDurationRange.addEventListener('input', () => {
@@ -1027,9 +1074,10 @@ input[type=range]::-moz-range-thumb{
       state.drawing = true;
       canvas.setPointerCapture(e.pointerId);
       const pos = getPos(e, canvas);
-      state.lastPoint = pos;
+      state.strokePoints = [pos];
       const ctx = canvas.getContext('2d');
       applyBrushStyle(ctx);
+      // Tiny stroke so a single tap still leaves a dot.
       ctx.beginPath();
       ctx.moveTo(pos.x, pos.y);
       ctx.lineTo(pos.x + 0.01, pos.y + 0.01);
@@ -1038,18 +1086,40 @@ input[type=range]::-moz-range-thumb{
     canvas.addEventListener('pointermove', (e) => {
       if(!state.drawing || !canvas.classList.contains('active-layer')) return;
       if(!e.isPrimary || state.pinch.active) return;
-      const pos = getPos(e, canvas);
       const ctx = canvas.getContext('2d');
       applyBrushStyle(ctx);
-      ctx.beginPath();
-      ctx.moveTo(state.lastPoint.x, state.lastPoint.y);
-      ctx.lineTo(pos.x, pos.y);
-      ctx.stroke();
-      state.lastPoint = pos;
+
+      // Sample coalesced sub-events when the browser provides them so fast
+      // strokes get enough points to smooth, then connect points with
+      // quadratic curves through their midpoints instead of straight
+      // segments — this is what removes the "stiff"/jagged look.
+      const events = (typeof e.getCoalescedEvents === 'function' && e.getCoalescedEvents().length)
+        ? e.getCoalescedEvents() : [e];
+
+      events.forEach(ev => {
+        const pos = getPos(ev, canvas);
+        const pts = state.strokePoints;
+        pts.push(pos);
+        const n = pts.length;
+        if(n < 3){
+          ctx.beginPath();
+          ctx.moveTo(pts[n-2].x, pts[n-2].y);
+          ctx.lineTo(pts[n-1].x, pts[n-1].y);
+          ctx.stroke();
+        } else {
+          const p0 = pts[n-3], p1 = pts[n-2], p2 = pts[n-1];
+          const mid1 = { x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2 };
+          const mid2 = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
+          ctx.beginPath();
+          ctx.moveTo(mid1.x, mid1.y);
+          ctx.quadraticCurveTo(p1.x, p1.y, mid2.x, mid2.y);
+          ctx.stroke();
+        }
+      });
     });
-    function endStroke(e){
+    function endStroke(){
       state.drawing = false;
-      state.lastPoint = null;
+      state.strokePoints = [];
     }
     canvas.addEventListener('pointerup', endStroke);
     canvas.addEventListener('pointercancel', endStroke);
