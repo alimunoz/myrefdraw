@@ -271,6 +271,7 @@ input[type=range]::-moz-range-thumb{
       </div>
       <div class="field-help">Las imágenes se quedan en tu navegador: nada se sube a ningún servidor.</div>
       <input type="file" id="folder-fallback-input" webkitdirectory multiple accept="image/*" hidden>
+      <input type="file" id="files-fallback-input" multiple accept="image/*" hidden>
     </div>
 
     <div class="field">
@@ -431,7 +432,13 @@ input[type=range]::-moz-range-thumb{
   const sessionScreen = el('session-screen');
   const pickFolderBtn = el('pick-folder-btn');
   const folderFallbackInput = el('folder-fallback-input');
+  const filesFallbackInput = el('files-fallback-input');
   const folderStatus = el('folder-status');
+  const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+  if(isMobileDevice){
+    pickFolderBtn.textContent = 'Elegir imágenes';
+  }
   const imageDurationRange = el('image-duration-range');
   const imageDurationValue = el('image-duration-value');
   const sessionDurationRange = el('session-duration-range');
@@ -498,7 +505,12 @@ input[type=range]::-moz-range-thumb{
   async function pickFolder(){
     setupError.style.display = 'none';
     try{
-      if(window.showDirectoryPicker){
+      if(isMobileDevice){
+        // La selección de carpetas (webkitdirectory / File System Access API) no
+        // funciona de forma fiable en navegadores móviles, así que en móvil
+        // dejamos elegir varias imágenes directamente desde Fotos/Archivos.
+        filesFallbackInput.click();
+      } else if(window.showDirectoryPicker){
         const dirHandle = await window.showDirectoryPicker();
         const files = [];
         async function walk(handle, depth){
@@ -529,6 +541,12 @@ input[type=range]::-moz-range-thumb{
     if(files[0] && files[0].webkitRelativePath){
       folderName = files[0].webkitRelativePath.split('/')[0];
     }
+    applyPickedFiles(files, folderName);
+  });
+
+  filesFallbackInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files).filter(isImageFile);
+    const folderName = files.length === 1 ? files[0].name : `${files.length} imágenes seleccionadas`;
     applyPickedFiles(files, folderName);
   });
 
