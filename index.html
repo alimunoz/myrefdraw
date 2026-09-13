@@ -190,6 +190,27 @@ input[type=range]::-moz-range-thumb{
   font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
   box-shadow:var(--shadow);
 }
+#eraser-shortcut-btn{
+  display:flex; align-items:center; gap:5px;
+  position:absolute; bottom:12px; left:12px; z-index:10;
+  background:var(--bg-elev); border:1px solid var(--border); color:var(--paper);
+  font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
+  box-shadow:var(--shadow);
+}
+#eraser-shortcut-btn.active{ border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+#undo-shortcut-btn{
+  display:flex; align-items:center; gap:5px;
+  position:absolute; bottom:12px; right:12px; z-index:10;
+  background:var(--bg-elev); border:1px solid var(--border); color:var(--paper);
+  font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
+  box-shadow:var(--shadow);
+}
+#color-pick-preview{
+  position:fixed; z-index:200; width:52px; height:52px; border-radius:50%;
+  border:3px solid var(--paper); box-shadow:0 4px 16px rgba(0,0,0,.55);
+  transform:translate(-50%, -145%);
+  pointer-events:none;
+}
 #canvas-stack canvas{
   position:absolute; top:0; left:0;
   width:100%; height:100%;
@@ -387,6 +408,9 @@ input[type=range]::-moz-range-thumb{
       </div>
       <button id="toolbar-toggle-btn" class="hidden" title="Herramientas">Herramientas</button>
       <button id="zoom-reset-btn" class="hidden" title="Restablecer zoom">100% ↺</button>
+      <button id="eraser-shortcut-btn" class="hidden" title="Alternar borrador">🧹 Borrador</button>
+      <button id="undo-shortcut-btn" class="hidden" title="Deshacer">↩ Deshacer</button>
+      <div id="color-pick-preview" class="hidden"></div>
     </div>
 
     <div id="toolbar" class="hidden">
@@ -453,6 +477,7 @@ input[type=range]::-moz-range-thumb{
           <input type="color" id="brush-color" value="#2a2a2a">
           <button class="small-btn eraser-toggle" id="eraser-toggle-btn">Borrador</button>
         </div>
+        <div class="field-help">Mantené presionado sobre el lienzo para tomar ese color con el dedo.</div>
       </div>
 
       <div class="tool-section" data-section="historial">
@@ -507,6 +532,9 @@ input[type=range]::-moz-range-thumb{
     drawing: false,
     lastPoint: null,
     strokePoints: [],
+    strokeStarted: false,
+    strokeLayerIdx: 0,
+    pick: { active: false, timer: null, moved: false, startClient: { x: 0, y: 0 } },
     zoom: { scale: 1, x: 0, y: 0 },
     pinch: { active: false, startDist: 0, startScale: 1, startMid: {x:0,y:0}, startTranslate: {x:0,y:0} },
     activePointers: new Map(),
@@ -547,6 +575,9 @@ input[type=range]::-moz-range-thumb{
   const toolbarTabs = document.querySelectorAll('.toolbar-tab');
   const toolSections = document.querySelectorAll('.tool-section');
   const zoomResetBtn = el('zoom-reset-btn');
+  const eraserShortcutBtn = el('eraser-shortcut-btn');
+  const undoShortcutBtn = el('undo-shortcut-btn');
+  const colorPickPreview = el('color-pick-preview');
   const layerTabs = document.querySelectorAll('.layer-tab');
   const layerHideBtn = el('layer-hide-btn');
   const layerClearBtn = el('layer-clear-btn');
@@ -722,14 +753,19 @@ input[type=range]::-moz-range-thumb{
       canvasStack.classList.remove('hidden');
       toolbar.classList.remove('hidden');
       toolbarToggleBtn.classList.remove('hidden');
+      eraserShortcutBtn.classList.remove('hidden');
+      undoShortcutBtn.classList.remove('hidden');
     } else {
       refImagePlain.classList.remove('hidden');
       canvasStack.classList.add('hidden');
       toolbar.classList.add('hidden');
       toolbarToggleBtn.classList.add('hidden');
+      eraserShortcutBtn.classList.add('hidden');
+      undoShortcutBtn.classList.add('hidden');
     }
     closeToolbar();
     resetZoom();
+    hideColorPreview();
 
     btnPause.querySelector('.icon').textContent = '⏸';
     btnPause.lastChild.textContent = 'Pausar';
@@ -944,10 +980,14 @@ input[type=range]::-moz-range-thumb{
     brushOpacityValue.textContent = brushOpacityRange.value + '%';
   });
   brushColor.addEventListener('input', () => { state.brush.color = brushColor.value; });
-  eraserToggleBtn.addEventListener('click', () => {
-    state.brush.eraser = !state.brush.eraser;
-    eraserToggleBtn.classList.toggle('active', state.brush.eraser);
-  });
+  function setEraser(val){
+    state.brush.eraser = val;
+    eraserToggleBtn.classList.toggle('active', val);
+    eraserShortcutBtn.classList.toggle('active', val);
+  }
+  eraserToggleBtn.addEventListener('click', () => setEraser(!state.brush.eraser));
+  eraserShortcutBtn.addEventListener('click', () => setEraser(!state.brush.eraser));
+  undoShortcutBtn.addEventListener('click', () => undoBtn.click());
 
   /* ---------------- Undo ---------------- */
   function pushUndoSnapshot(layerIdx){
@@ -1086,7 +1126,7 @@ input[type=range]::-moz-range-thumb{
   // slightly-spreading ink look.
   function strokeTextured(ctx, buildPath){
     const b = state.brush;
-    if(b.eraser || b.texture === 'solid' || !b.texture){
+    if(b.texture === 'solid' || !b.texture){
       buildPath(ctx, 0, 0);
       ctx.stroke();
       return;
@@ -1109,7 +1149,9 @@ input[type=range]::-moz-range-thumb{
       ctx.stroke();
     } else if(b.texture === 'graphite'){
       const prevComposite = ctx.globalCompositeOperation;
-      ctx.globalCompositeOperation = 'multiply';
+      // Multiply blend gives graphite its build-up look when painting, but
+      // it would fight destination-out when erasing, so skip it there.
+      if(!b.eraser) ctx.globalCompositeOperation = 'multiply';
       const passes = 3;
       for(let i = 0; i < passes; i++){
         const jitter = baseWidth * 0.18;
@@ -1126,28 +1168,110 @@ input[type=range]::-moz-range-thumb{
     ctx.lineWidth = baseWidth;
   }
 
+  /* ---------------- Color picker (long-press on the canvas) ---------------- */
+  // Flattens the reference image (respecting its opacity) and every visible
+  // draw layer into an offscreen canvas, then reads back the pixel under a
+  // given screen point. Used by the press-and-hold eyedropper.
+  function sampleColorAt(clientX, clientY){
+    const size = state.displaySize;
+    if(!size || !size.w) return null;
+    const rect = canvasStack.getBoundingClientRect();
+    const scale = state.zoom.scale || 1;
+    const x = (clientX - rect.left) / scale;
+    const y = (clientY - rect.top) / scale;
+    if(x < 0 || y < 0 || x >= size.w || y >= size.h) return null;
+    try{
+      const tmp = document.createElement('canvas');
+      tmp.width = size.w; tmp.height = size.h;
+      const tctx = tmp.getContext('2d');
+      tctx.globalAlpha = state.refOpacity;
+      tctx.drawImage(refCanvas, 0, 0, size.w, size.h);
+      tctx.globalAlpha = 1;
+      drawLayers.forEach(c => {
+        if(c.style.visibility !== 'hidden'){
+          tctx.drawImage(c, 0, 0, size.w, size.h);
+        }
+      });
+      const px = Math.max(0, Math.min(size.w - 1, Math.round(x)));
+      const py = Math.max(0, Math.min(size.h - 1, Math.round(y)));
+      const d = tctx.getImageData(px, py, 1, 1).data;
+      if(d[3] === 0) return null;
+      const toHex = n => n.toString(16).padStart(2, '0');
+      return `#${toHex(d[0])}${toHex(d[1])}${toHex(d[2])}`;
+    } catch(err){
+      console.warn('No se pudo leer el color del lienzo.', err);
+      return null;
+    }
+  }
+  function showColorPreview(clientX, clientY){
+    const hex = sampleColorAt(clientX, clientY);
+    colorPickPreview.style.left = clientX + 'px';
+    colorPickPreview.style.top = clientY + 'px';
+    if(hex){
+      colorPickPreview.style.background = hex;
+      colorPickPreview.dataset.hex = hex;
+    }
+    colorPickPreview.classList.remove('hidden');
+  }
+  function hideColorPreview(){
+    colorPickPreview.classList.add('hidden');
+  }
+  function commitColorPick(clientX, clientY){
+    const hex = sampleColorAt(clientX, clientY) || colorPickPreview.dataset.hex;
+    if(hex){
+      state.brush.color = hex;
+      brushColor.value = hex;
+      if(state.brush.eraser) setEraser(false);
+    }
+    hideColorPreview();
+  }
+
+  const LONG_PRESS_MS = 420;
+  const TAP_MOVE_TOLERANCE = 6; // CSS px of movement before a hold counts as a drag/draw
+
   drawLayers.forEach(canvas => {
     canvas.addEventListener('pointerdown', (e) => {
       if(!canvas.classList.contains('active-layer')) return;
       if(!e.isPrimary || state.pinch.active || state.activePointers.size >= 2) return; // let 2nd finger pinch/pan instead of drawing
-      const idx = +canvas.dataset.layer;
-      pushUndoSnapshot(idx);
-      state.drawing = true;
       canvas.setPointerCapture(e.pointerId);
+
       const pos = getPos(e, canvas);
       state.strokePoints = [pos];
-      const ctx = canvas.getContext('2d');
-      applyBrushStyle(ctx);
-      // Tiny stroke so a single tap still leaves a dot.
-      strokeTextured(ctx, (c, dx, dy) => {
-        c.beginPath();
-        c.moveTo(pos.x + dx, pos.y + dy);
-        c.lineTo(pos.x + 0.01 + dx, pos.y + 0.01 + dy);
-      });
+      state.strokeStarted = false; // undo snapshot is taken lazily, only once we know this is a real stroke
+      state.strokeLayerIdx = +canvas.dataset.layer;
+      state.drawing = true;
+
+      state.pick.startClient = { x: e.clientX, y: e.clientY };
+      state.pick.moved = false;
+      state.pick.active = false;
+      clearTimeout(state.pick.timer);
+      state.pick.timer = setTimeout(() => {
+        if(state.pick.moved || state.pinch.active || !state.drawing) return;
+        // Held still without moving: switch to picking a color instead of drawing.
+        state.pick.active = true;
+        state.drawing = false;
+        showColorPreview(state.pick.startClient.x, state.pick.startClient.y);
+      }, LONG_PRESS_MS);
     });
+
     canvas.addEventListener('pointermove', (e) => {
-      if(!state.drawing || !canvas.classList.contains('active-layer')) return;
+      if(!canvas.classList.contains('active-layer')) return;
       if(!e.isPrimary || state.pinch.active) return;
+
+      if(state.pick.active){
+        showColorPreview(e.clientX, e.clientY);
+        return;
+      }
+      if(!state.drawing) return;
+
+      if(!state.pick.moved){
+        const dist = Math.hypot(e.clientX - state.pick.startClient.x, e.clientY - state.pick.startClient.y);
+        if(dist > TAP_MOVE_TOLERANCE){
+          state.pick.moved = true;
+          clearTimeout(state.pick.timer);
+        }
+      }
+
       const ctx = canvas.getContext('2d');
       applyBrushStyle(ctx);
 
@@ -1163,6 +1287,10 @@ input[type=range]::-moz-range-thumb{
         const pts = state.strokePoints;
         pts.push(pos);
         const n = pts.length;
+        if(!state.strokeStarted){
+          pushUndoSnapshot(state.strokeLayerIdx);
+          state.strokeStarted = true;
+        }
         if(n < 3){
           strokeTextured(ctx, (c, dx, dy) => {
             c.beginPath();
@@ -1181,13 +1309,34 @@ input[type=range]::-moz-range-thumb{
         }
       });
     });
-    function endStroke(){
+    function endStroke(e){
+      clearTimeout(state.pick.timer);
+      if(state.pick.active){
+        const p = (e && typeof e.clientX === 'number') ? e : state.pick.startClient;
+        commitColorPick(p.x, p.y);
+      } else if(state.drawing && !state.pick.moved && state.strokePoints.length){
+        // A quick tap with no movement and no long-press/pinch interruption:
+        // leave a single dot. Drawing this lazily (instead of on
+        // pointerdown) is what stops pinch-to-zoom from leaving a stray dot
+        // at the finger's landing spot.
+        pushUndoSnapshot(state.strokeLayerIdx);
+        const ctx = canvas.getContext('2d');
+        applyBrushStyle(ctx);
+        const pos = state.strokePoints[0];
+        strokeTextured(ctx, (c, dx, dy) => {
+          c.beginPath();
+          c.moveTo(pos.x + dx, pos.y + dy);
+          c.lineTo(pos.x + 0.01 + dx, pos.y + 0.01 + dy);
+        });
+      }
       state.drawing = false;
+      state.pick.active = false;
       state.strokePoints = [];
+      hideColorPreview();
     }
     canvas.addEventListener('pointerup', endStroke);
-    canvas.addEventListener('pointercancel', endStroke);
-    canvas.addEventListener('pointerleave', endStroke);
+    canvas.addEventListener('pointercancel', () => endStroke());
+    canvas.addEventListener('pointerleave', () => endStroke());
   });
 
   /* ---------------- Init ---------------- */
