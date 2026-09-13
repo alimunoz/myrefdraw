@@ -260,6 +260,7 @@ input[type=range]::-moz-range-thumb{
 .brush-texture.active{ border-color:var(--accent); color:var(--paper); background:var(--accent-soft); }
 
 .slider-line{ margin-top:12px; }
+.slider-line.disabled{ opacity:.4; pointer-events:none; }
 .slider-line .field-label{ margin-bottom:6px; }
 .color-row{ display:flex; align-items:center; gap:10px; margin-top:12px; }
 .color-row input[type=color]{
@@ -480,6 +481,22 @@ input[type=range]::-moz-range-thumb{
           <button class="small-btn eraser-toggle" id="eraser-toggle-btn">Borrador</button>
         </div>
         <div class="field-help">Mantené presionado sobre el lienzo para tomar ese color con el dedo.</div>
+
+        <div class="field toggle-row" style="margin-top:16px;">
+          <div class="desc">
+            <span class="name">Estabilizador de trazo</span>
+            <div class="field-help">Suaviza el pulso mientras dibujas. Desactívalo para un trazo más directo y sin filtrar.</div>
+          </div>
+          <div class="switch">
+            <input type="checkbox" id="stabilizer-toggle" checked>
+            <label for="stabilizer-toggle"></label>
+          </div>
+        </div>
+
+        <div class="slider-line" id="stabilizer-intensity-row">
+          <div class="field-label"><span class="name">Intensidad</span><span class="value" id="stabilizer-intensity-value">50%</span></div>
+          <input type="range" id="stabilizer-intensity-range" min="0" max="100" step="1" value="50">
+        </div>
       </div>
 
       <div class="tool-section" data-section="historial">
@@ -527,7 +544,7 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
     paused: false,
     timerHandle: null,
     activeLayer: 0,
-    brush: { type: 'pencil', texture: 'solid', size: 8, opacity: 1, color: '#2a2a2a', eraser: false },
+    brush: { type: 'pencil', texture: 'solid', size: 8, opacity: 1, color: '#2a2a2a', eraser: false, stabilizerEnabled: true, stabilizerIntensity: 50 },
     refOpacity: 0.7,
     undoStacks: [[],[],[],[],[]], // per layer, array of ImageData snapshots
     layerHidden: [false,false,false,false,false],
@@ -595,6 +612,10 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
   const brushOpacityRange = el('brush-opacity-range');
   const brushOpacityValue = el('brush-opacity-value');
   const brushColor = el('brush-color');
+  const stabilizerToggle = el('stabilizer-toggle');
+  const stabilizerIntensityRow = el('stabilizer-intensity-row');
+  const stabilizerIntensityRange = el('stabilizer-intensity-range');
+  const stabilizerIntensityValue = el('stabilizer-intensity-value');
   const eraserToggleBtn = el('eraser-toggle-btn');
   const undoBtn = el('undo-btn');
   const btnPrev = el('btn-prev');
@@ -997,6 +1018,14 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
     brushOpacityValue.textContent = brushOpacityRange.value + '%';
   });
   brushColor.addEventListener('input', () => { state.brush.color = brushColor.value; });
+  stabilizerToggle.addEventListener('change', () => {
+    state.brush.stabilizerEnabled = stabilizerToggle.checked;
+    stabilizerIntensityRow.classList.toggle('disabled', !stabilizerToggle.checked);
+  });
+  stabilizerIntensityRange.addEventListener('input', () => {
+    state.brush.stabilizerIntensity = +stabilizerIntensityRange.value;
+    stabilizerIntensityValue.textContent = stabilizerIntensityRange.value + '%';
+  });
   function setEraser(val){
     state.brush.eraser = val;
     eraserToggleBtn.classList.toggle('active', val);
@@ -1303,9 +1332,16 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
   // gaussian post-process applied to the whole stroke once it's finished —
   // this is what removes the "stuck"/jittery feel when switching brushes fast.
   function makeStabilizer(){
+    // Maps the 0-100 "Intensidad" slider onto the filter's actual params.
+    // Higher intensity = lower minCutoff/beta (more smoothing, more lag)
+    // plus a wider post-stroke gaussian pass; 0 is close to raw input.
+    const t = Math.max(0, Math.min(100, state.brush.stabilizerIntensity)) / 100;
+    const minCutoff = 3.0 - t * 2.7;   // 3.0 (barely smoothed) -> 0.3 (heavy smoothing)
+    const beta = 0.03 - t * 0.028;     // 0.03 -> 0.002
+    const kernelSize = Math.max(1, Math.round(1 + t * 14)); // 1 -> 15
     return new StabilizedPointer()
-      .addFilter(oneEuroFilter({ minCutoff: 1.0, beta: 0.007 }))
-      .addPostProcess(gaussianKernel({ size: 7 }));
+      .addFilter(oneEuroFilter({ minCutoff, beta }))
+      .addPostProcess(gaussianKernel({ size: kernelSize }));
   }
 
   /* ---------------- Color picker (long-press on the canvas) ---------------- */
@@ -1381,7 +1417,7 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
       // The eraser stays direct (immediate feedback matters more than
       // smoothing there); everything else runs through the stabilizer and
       // only commits to the real layer once the stroke finishes.
-      state.stabilizer = state.brush.eraser ? null : makeStabilizer();
+      state.stabilizer = (state.brush.eraser || !state.brush.stabilizerEnabled) ? null : makeStabilizer();
       if(state.stabilizer) state.stabilizer.process({ x: pos.x, y: pos.y, timestamp: e.timeStamp });
 
       state.pick.startClient = { x: e.clientX, y: e.clientY };
