@@ -1043,6 +1043,29 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
   const canvasZoomer = new Zoomer(canvasStack, zoomerOptions);
   const refZoomer = new Zoomer(refImagePlain, zoomerOptions);
 
+  // Zoomer's InputHandler.onPointerDown unconditionally calls
+  // this.element.setPointerCapture(pointerId) on its OWN element
+  // (canvasStack / refImagePlain) as every pointerdown bubbles past it —
+  // regardless of panMultiTouchOnly — which steals the pointer away from
+  // whichever draw-layer <canvas> just captured it a moment earlier in
+  // its own pointerdown handler. Once that happens, every subsequent
+  // pointermove is dispatched with canvas-stack as the target instead of
+  // the canvas, and since the canvas is a *descendant*, our pointermove
+  // listener on it never fires again — strokePoints gets stuck at a
+  // single point. (Confirmed by reading Zoomer's actual source: it's the
+  // only call site of setPointerCapture in the library.)
+  // Fix: neutralize just that one call while a single-finger stroke or
+  // color-pick is in progress, so Zoomer's own pointer tracking, window
+  // listeners, and 2+ finger pinch/rotate math all keep working exactly
+  // as before — only the capture theft is suppressed.
+  [canvasStack, refImagePlain].forEach(zoomTarget => {
+    const nativeSetPointerCapture = zoomTarget.setPointerCapture.bind(zoomTarget);
+    zoomTarget.setPointerCapture = function(pointerId){
+      if(state.drawing || state.pick.active) return;
+      nativeSetPointerCapture(pointerId);
+    };
+  });
+
   function getActiveZoomer(){
     return state.config.canvasEnabled ? canvasZoomer : refZoomer;
   }
@@ -1349,19 +1372,6 @@ import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.js
       if(!canvas.classList.contains('active-layer')) return;
       if(!e.isPrimary || state.multiTouch) return; // let 2nd finger pan/zoom instead of drawing
       canvas.setPointerCapture(e.pointerId);
-      // Zoomer's InputHandler.onPointerDown unconditionally calls
-      // this.element.setPointerCapture(pointerId) on ITS element
-      // (canvasStack/refImagePlain) as this event bubbles past it —
-      // regardless of panMultiTouchOnly — stealing capture away from
-      // `canvas` right after we grab it above. Once that happens every
-      // subsequent pointermove targets canvas-stack instead of canvas,
-      // and since canvas is a *descendant*, our pointermove listener on
-      // it never fires again (strokePoints gets stuck at 1 point).
-      // Re-claim capture in a microtask, which runs right after this
-      // event finishes bubbling through Zoomer, so canvas wins it back.
-      const pid = e.pointerId;
-      queueMicrotask(() => { try{ canvas.setPointerCapture(pid); }catch(err){} });
-
       const pos = getPos(e);
       state.strokePoints = [pos];
       state.strokeStarted = false; // undo snapshot is taken lazily, only once we know this is a real stroke
