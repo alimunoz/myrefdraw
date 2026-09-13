@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Atril — práctica de dibujo con referencias</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -133,7 +133,7 @@ input[type=range]::-moz-range-thumb{
 #top-bar{
   display:flex; align-items:center; gap:16px;
   padding:12px 20px;
-  padding-top:max(20px, env(safe-area-inset-top));
+  padding-top:max(12px, env(safe-area-inset-top));
   background:var(--bg-elev);
   border-bottom:1px solid var(--border);
   flex:0 0 auto;
@@ -144,13 +144,6 @@ input[type=range]::-moz-range-thumb{
 .progress-fill{ height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
 #exit-btn{ background:none; border:none; color:var(--muted); font-size:13px; cursor:pointer; padding:4px 6px;}
 #exit-btn:hover{ color:var(--paper); }
-#toolbar-toggle-btn{
-  display:none; background:none; border:1px solid var(--border); color:var(--paper);
-  font-size:13px; cursor:pointer; padding:7px 12px; border-radius:999px; flex:0 0 auto;
-  align-items:center; gap:6px; white-space:nowrap;
-}
-#toolbar-toggle-btn span{ font-size:14px; }
-#toolbar-toggle-btn.active{ border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 
 .toolbar-header{ display:none; }
 .toolbar-tabs{ display:flex; gap:6px; overflow-x:auto; flex:1; -ms-overflow-style:none; scrollbar-width:none; }
@@ -187,6 +180,13 @@ input[type=range]::-moz-range-thumb{
 #zoom-reset-btn{
   position:absolute; top:12px; right:12px; z-index:10;
   background:var(--bg-elev); border:1px solid var(--accent); color:var(--paper);
+  font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
+  box-shadow:var(--shadow);
+}
+#toolbar-toggle-btn{
+  display:none;
+  position:absolute; top:12px; left:12px; z-index:10;
+  background:var(--bg-elev); border:1px solid var(--border); color:var(--paper);
   font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
   box-shadow:var(--shadow);
 }
@@ -231,6 +231,11 @@ input[type=range]::-moz-range-thumb{
   background:var(--bg-elev-2); color:var(--muted); font-size:12px; cursor:pointer;
 }
 .brush-type.active{ border-color:var(--accent); color:var(--paper); background:var(--accent-soft); }
+.brush-texture{
+  flex:1; padding:9px 4px; border-radius:var(--radius); border:1px solid var(--border);
+  background:var(--bg-elev-2); color:var(--muted); font-size:12px; cursor:pointer;
+}
+.brush-texture.active{ border-color:var(--accent); color:var(--paper); background:var(--accent-soft); }
 
 .slider-line{ margin-top:12px; }
 .slider-line .field-label{ margin-bottom:6px; }
@@ -276,27 +281,27 @@ input[type=range]::-moz-range-thumb{
 .end-actions{ display:flex; gap:10px; }
 
 @media (max-width: 760px){
-  #toolbar-toggle-btn{ display:inline-flex; align-items:center; justify-content:center; }
+  #toolbar-toggle-btn{ display:block; }
   #top-bar{ padding:10px 14px; gap:8px; }
   #top-bar .counter{ font-size:12px; }
   #top-bar .session-time{ font-size:12px; }
 
-  #stage-wrap{ position:relative; }
-
-  /* Toolbar becomes a collapsible drawer that overlays the canvas
-     instead of squeezing it, so drawing space stays full-size. */
-  #toolbar-backdrop{
-    position:fixed; inset:0; background:rgba(10,9,8,.45); z-index:29;
-  }
+  /* Toolbar becomes a plain full-screen panel, shown/hidden with a simple
+     display toggle (no transforms/position tricks, for max compatibility
+     across mobile browsers/webviews). */
   #toolbar{
-    position:absolute; top:0; left:0; right:0; z-index:30;
-    width:100%; border-left:none; border-top:1px solid var(--border);
-    max-height:70vh; overflow-y:auto;
-    border-radius:0 0 10px 10px; box-shadow:var(--shadow);
-    transform:translateY(-100%); transition:transform .22s ease;
-    padding:14px 14px 20px;
+    display:none;
   }
-  #toolbar.toolbar-open{ transform:translateY(0); }
+  #toolbar.toolbar-open{
+    display:flex; flex-direction:column;
+    position:fixed; inset:0; z-index:100;
+    width:auto; border:none;
+    max-height:none; height:100vh; height:100dvh;
+    overflow-y:auto;
+    border-radius:0; box-shadow:none;
+    padding:16px 16px 24px;
+    padding-top:max(16px, env(safe-area-inset-top));
+  }
 
   /* Sections become tabbed panes on mobile: only the selected one shows,
      so nothing is hidden below an unnoticed scroll area. */
@@ -366,7 +371,6 @@ input[type=range]::-moz-range-thumb{
     <span class="counter" id="image-counter">1 / 1</span>
     <div class="progress-wrap"><div class="progress-fill" id="image-progress-fill"></div></div>
     <span class="session-time" id="session-time-left">00:00</span>
-    <button id="toolbar-toggle-btn" title="Herramientas">Herramientas</button>
     <button id="exit-btn" title="Terminar y volver al inicio">Salir</button>
   </div>
 
@@ -381,10 +385,10 @@ input[type=range]::-moz-range-thumb{
         <canvas class="draw-layer" data-layer="3"></canvas>
         <canvas class="draw-layer" data-layer="4"></canvas>
       </div>
+      <button id="toolbar-toggle-btn" class="hidden" title="Herramientas">Herramientas</button>
       <button id="zoom-reset-btn" class="hidden" title="Restablecer zoom">100% ↺</button>
     </div>
 
-    <div id="toolbar-backdrop" class="hidden"></div>
     <div id="toolbar" class="hidden">
       <div class="toolbar-header">
         <div class="toolbar-tabs" id="toolbar-tabs">
@@ -426,6 +430,13 @@ input[type=range]::-moz-range-thumb{
           <button class="brush-type active" data-brush="pencil">Lápiz</button>
           <button class="brush-type" data-brush="soft">Suave</button>
           <button class="brush-type" data-brush="marker">Marcador</button>
+        </div>
+
+        <div class="field-label"><span class="name">Textura</span></div>
+        <div class="brush-types">
+          <button class="brush-texture active" data-texture="solid">Sólido</button>
+          <button class="brush-texture" data-texture="graphite">Grafito</button>
+          <button class="brush-texture" data-texture="ink">Tinta</button>
         </div>
 
         <div class="slider-line">
@@ -486,7 +497,7 @@ input[type=range]::-moz-range-thumb{
     paused: false,
     timerHandle: null,
     activeLayer: 0,
-    brush: { type: 'pencil', size: 8, opacity: 1, color: '#2a2a2a', eraser: false },
+    brush: { type: 'pencil', texture: 'solid', size: 8, opacity: 1, color: '#2a2a2a', eraser: false },
     refOpacity: 0.7,
     undoStacks: [[],[],[],[],[]], // per layer, array of ImageData snapshots
     layerHidden: [false,false,false,false,false],
@@ -532,7 +543,6 @@ input[type=range]::-moz-range-thumb{
   const stageEl = el('stage');
   const toolbar = el('toolbar');
   const toolbarToggleBtn = el('toolbar-toggle-btn');
-  const toolbarBackdrop = el('toolbar-backdrop');
   const toolbarCloseBtn = el('toolbar-close-btn');
   const toolbarTabs = document.querySelectorAll('.toolbar-tab');
   const toolSections = document.querySelectorAll('.tool-section');
@@ -544,6 +554,7 @@ input[type=range]::-moz-range-thumb{
   const refOpacityDown = el('ref-opacity-down');
   const refOpacityValue = el('ref-opacity-value');
   const brushTypeBtns = document.querySelectorAll('.brush-type');
+  const brushTextureBtns = document.querySelectorAll('.brush-texture');
   const brushSizeRange = el('brush-size-range');
   const brushSizeValue = el('brush-size-value');
   const brushOpacityRange = el('brush-opacity-range');
@@ -656,23 +667,18 @@ input[type=range]::-moz-range-thumb{
 
   pickFolderBtn.addEventListener('click', pickFolder);
 
-  /* ---------------- Mobile: collapsible toolbar drawer ---------------- */
+  /* ---------------- Mobile: full-screen toolbar panel ---------------- */
   function openToolbar(){
     toolbar.classList.add('toolbar-open');
-    toolbarBackdrop.classList.remove('hidden');
-    toolbarToggleBtn.classList.add('active');
     toolbar.scrollTop = 0;
   }
   function closeToolbar(){
     toolbar.classList.remove('toolbar-open');
-    toolbarBackdrop.classList.add('hidden');
-    toolbarToggleBtn.classList.remove('active');
   }
   toolbarToggleBtn.addEventListener('click', () => {
     if(toolbar.classList.contains('toolbar-open')) closeToolbar();
     else openToolbar();
   });
-  toolbarBackdrop.addEventListener('click', closeToolbar);
   toolbarCloseBtn.addEventListener('click', closeToolbar);
 
   function setToolbarSection(name){
@@ -922,6 +928,13 @@ input[type=range]::-moz-range-thumb{
       state.brush.type = btn.dataset.brush;
     });
   });
+  brushTextureBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      brushTextureBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.brush.texture = btn.dataset.texture;
+    });
+  });
   brushSizeRange.addEventListener('input', () => {
     state.brush.size = +brushSizeRange.value;
     brushSizeValue.textContent = state.brush.size + ' px';
@@ -1066,6 +1079,53 @@ input[type=range]::-moz-range-thumb{
     }
   }
 
+  // Renders one path (built by buildPath) with the current brush texture:
+  // 'solid' just strokes it once as-is; 'graphite' layers a few jittered,
+  // lower-alpha passes with a multiply blend for a grainy pencil look;
+  // 'ink' adds a soft blurred bleed pass under a crisp core for a wet,
+  // slightly-spreading ink look.
+  function strokeTextured(ctx, buildPath){
+    const b = state.brush;
+    if(b.eraser || b.texture === 'solid' || !b.texture){
+      buildPath(ctx, 0, 0);
+      ctx.stroke();
+      return;
+    }
+    const baseWidth = ctx.lineWidth;
+    const baseAlpha = ctx.globalAlpha;
+
+    if(b.texture === 'ink'){
+      ctx.save();
+      ctx.filter = 'blur(1px)';
+      ctx.globalAlpha = baseAlpha * 0.30;
+      ctx.lineWidth = baseWidth * 1.7;
+      buildPath(ctx, 0, 0);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.globalAlpha = Math.min(1, baseAlpha * 1.15);
+      ctx.lineWidth = baseWidth * 0.85;
+      buildPath(ctx, 0, 0);
+      ctx.stroke();
+    } else if(b.texture === 'graphite'){
+      const prevComposite = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'multiply';
+      const passes = 3;
+      for(let i = 0; i < passes; i++){
+        const jitter = baseWidth * 0.18;
+        const dx = (Math.random() - 0.5) * jitter;
+        const dy = (Math.random() - 0.5) * jitter;
+        ctx.globalAlpha = baseAlpha * (0.28 + Math.random() * 0.28);
+        ctx.lineWidth = baseWidth * (0.55 + Math.random() * 0.55);
+        buildPath(ctx, dx, dy);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = prevComposite;
+    }
+    ctx.globalAlpha = baseAlpha;
+    ctx.lineWidth = baseWidth;
+  }
+
   drawLayers.forEach(canvas => {
     canvas.addEventListener('pointerdown', (e) => {
       if(!canvas.classList.contains('active-layer')) return;
@@ -1079,10 +1139,11 @@ input[type=range]::-moz-range-thumb{
       const ctx = canvas.getContext('2d');
       applyBrushStyle(ctx);
       // Tiny stroke so a single tap still leaves a dot.
-      ctx.beginPath();
-      ctx.moveTo(pos.x, pos.y);
-      ctx.lineTo(pos.x + 0.01, pos.y + 0.01);
-      ctx.stroke();
+      strokeTextured(ctx, (c, dx, dy) => {
+        c.beginPath();
+        c.moveTo(pos.x + dx, pos.y + dy);
+        c.lineTo(pos.x + 0.01 + dx, pos.y + 0.01 + dy);
+      });
     });
     canvas.addEventListener('pointermove', (e) => {
       if(!state.drawing || !canvas.classList.contains('active-layer')) return;
@@ -1103,18 +1164,20 @@ input[type=range]::-moz-range-thumb{
         pts.push(pos);
         const n = pts.length;
         if(n < 3){
-          ctx.beginPath();
-          ctx.moveTo(pts[n-2].x, pts[n-2].y);
-          ctx.lineTo(pts[n-1].x, pts[n-1].y);
-          ctx.stroke();
+          strokeTextured(ctx, (c, dx, dy) => {
+            c.beginPath();
+            c.moveTo(pts[n-2].x + dx, pts[n-2].y + dy);
+            c.lineTo(pts[n-1].x + dx, pts[n-1].y + dy);
+          });
         } else {
           const p0 = pts[n-3], p1 = pts[n-2], p2 = pts[n-1];
           const mid1 = { x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2 };
           const mid2 = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
-          ctx.beginPath();
-          ctx.moveTo(mid1.x, mid1.y);
-          ctx.quadraticCurveTo(p1.x, p1.y, mid2.x, mid2.y);
-          ctx.stroke();
+          strokeTextured(ctx, (c, dx, dy) => {
+            c.beginPath();
+            c.moveTo(mid1.x + dx, mid1.y + dy);
+            c.quadraticCurveTo(p1.x + dx, p1.y + dy, mid2.x + dx, mid2.y + dy);
+          });
         }
       });
     });
