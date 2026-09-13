@@ -218,6 +218,7 @@ input[type=range]::-moz-range-thumb{
 }
 .draw-layer{ pointer-events:none; }
 .draw-layer.active-layer{ pointer-events:auto; cursor:crosshair; }
+#stroke-preview-canvas{ pointer-events:none; }
 
 /* ---------- Toolbar ---------- */
 #toolbar{
@@ -405,6 +406,7 @@ input[type=range]::-moz-range-thumb{
         <canvas class="draw-layer" data-layer="2"></canvas>
         <canvas class="draw-layer" data-layer="3"></canvas>
         <canvas class="draw-layer" data-layer="4"></canvas>
+        <canvas id="stroke-preview-canvas"></canvas>
       </div>
       <button id="toolbar-toggle-btn" class="hidden" title="Herramientas">Herramientas</button>
       <button id="zoom-reset-btn" class="hidden" title="Restablecer zoom">100% ↺</button>
@@ -508,7 +510,10 @@ input[type=range]::-moz-range-thumb{
   </div>
 </div>
 
-<script>
+<script type="module">
+import Zoomer from 'https://cdn.jsdelivr.net/npm/@alphanull/zoomer@1.0.0/dist/Zoomer.min.js';
+import { StabilizedPointer, oneEuroFilter, gaussianKernel } from 'https://cdn.jsdelivr.net/npm/@stroke-stabilizer/core@0.3.1/dist/index.js';
+
 (function(){
   "use strict";
 
@@ -535,9 +540,8 @@ input[type=range]::-moz-range-thumb{
     strokeStarted: false,
     strokeLayerIdx: 0,
     pick: { active: false, timer: null, moved: false, startClient: { x: 0, y: 0 } },
-    zoom: { scale: 1, x: 0, y: 0 },
-    pinch: { active: false, startDist: 0, startScale: 1, startMid: {x:0,y:0}, startTranslate: {x:0,y:0} },
-    activePointers: new Map(),
+    multiTouch: false,   // true while 2+ fingers are on the stage (Zoomer owns pan/zoom/rotate then)
+    stabilizer: null,    // active StabilizedPointer instance for the in-progress stroke
   };
 
   /* ---------------- Elements ---------------- */
@@ -603,6 +607,7 @@ input[type=range]::-moz-range-thumb{
   const endSetupBtn = el('end-setup-btn');
 
   const drawLayers = Array.from(document.querySelectorAll('.draw-layer'));
+  const strokePreviewCanvas = el('stroke-preview-canvas');
 
   /* ---------------- Helpers ---------------- */
   function fmtTime(totalSeconds){
@@ -876,6 +881,12 @@ input[type=range]::-moz-range-thumb{
     }
   }
 
+  // The plain reference <img> changes its rendered box every time a new
+  // photo loads (different aspect ratio); let its Zoomer re-measure then.
+  refImagePlain.addEventListener('load', () => {
+    if(refZoomer) refZoomer.updateLayout(true);
+  });
+
   function computeDisplaySize(){
     const stage = el('stage');
     const availW = stage.clientWidth * 0.94;
@@ -895,7 +906,7 @@ input[type=range]::-moz-range-thumb{
     canvasStack.style.height = size.h + 'px';
 
     const dpr = state.dpr;
-    const allCanvases = [refCanvas, ...drawLayers];
+    const allCanvases = [refCanvas, ...drawLayers, strokePreviewCanvas];
     allCanvases.forEach(c => {
       c.width = size.w * dpr;
       c.height = size.h * dpr;
@@ -914,6 +925,10 @@ input[type=range]::-moz-range-thumb{
       c.getContext('2d').clearRect(0,0,size.w,size.h);
     });
     state.undoStacks = [[],[],[],[],[]];
+
+    // canvasStack just changed size (e.g. new pose, different aspect ratio):
+    // tell its Zoomer instance to recompute bounds/fit against the new box.
+    if(canvasZoomer) canvasZoomer.updateLayout(true);
   }
 
   window.addEventListener('resize', () => {
@@ -921,6 +936,8 @@ input[type=range]::-moz-range-thumb{
       const img = new Image();
       img.src = state.images[state.index].url;
       img.onload = () => setupCanvasesForImage(img);
+    } else if(refZoomer){
+      refZoomer.updateLayout(true);
     }
   });
 
@@ -1008,80 +1025,77 @@ input[type=range]::-moz-range-thumb{
     c.getContext('2d').putImageData(data, 0, 0);
   });
 
-  /* ---------------- Zoom & pan (2-finger pinch/pan on the stage) ---------------- */
-  function applyZoomTransform(){
-    const t = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.scale})`;
-    canvasStack.style.transform = t;
-    refImagePlain.style.transform = t;
-    const isDefault = state.zoom.scale <= 1.02 && Math.abs(state.zoom.x) < 1 && Math.abs(state.zoom.y) < 1;
+  /* ---------------- Zoom, pan & rotation (Zoomer) ---------------- */
+  // Zoomer drives the physics (inertia, elastic bounds) and writes the CSS
+  // transform itself; we only read its `.state` back out to map pointer
+  // coordinates onto the untransformed canvas for drawing/color-picking.
+  const zoomerOptions = {
+    container: stageEl,
+    boundsEnabled: true,
+    fitContainer: 'none',   // displaySize/CSS already fit the image into the stage
+    minScale: 1,
+    maxScale: 6,
+    physicsEnabled: true,   // inertia + elastic rubber-banding at the edges
+    rotationEnabled: true,
+    panMultiTouchOnly: true, // 1 finger keeps drawing; 2+ fingers pan/zoom/rotate
+    onUpdate: updateZoomBadge
+  };
+  const canvasZoomer = new Zoomer(canvasStack, zoomerOptions);
+  const refZoomer = new Zoomer(refImagePlain, zoomerOptions);
+
+  function getActiveZoomer(){
+    return state.config.canvasEnabled ? canvasZoomer : refZoomer;
+  }
+  function updateZoomBadge(z){
+    const isDefault = Math.abs(z.scale - 1) < 0.02 && Math.abs(z.x) < 1 && Math.abs(z.y) < 1 && Math.abs(z.rotation) < 0.5;
     zoomResetBtn.classList.toggle('hidden', isDefault);
-    zoomResetBtn.textContent = Math.round(state.zoom.scale * 100) + '% ↺';
+    zoomResetBtn.textContent = Math.round(z.scale * 100) + '% ↺';
   }
   function resetZoom(){
-    state.zoom.scale = 1; state.zoom.x = 0; state.zoom.y = 0;
-    canvasStack.style.transform = '';
-    refImagePlain.style.transform = '';
-    zoomResetBtn.classList.add('hidden');
+    const z = getActiveZoomer();
+    if(z) z.reset(true); // immediate, matches the old one-tap reset behaviour
   }
   zoomResetBtn.addEventListener('click', resetZoom);
 
-  function clampPan(){
-    const maxOffsetX = (stageEl.clientWidth * (state.zoom.scale - 1)) / 2 + 60;
-    const maxOffsetY = (stageEl.clientHeight * (state.zoom.scale - 1)) / 2 + 60;
-    state.zoom.x = Math.max(-maxOffsetX, Math.min(maxOffsetX, state.zoom.x));
-    state.zoom.y = Math.max(-maxOffsetY, Math.min(maxOffsetY, state.zoom.y));
-  }
-  function ptDist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
-  function ptMid(a, b){ return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
-
+  // Lightweight finger-count tracking, kept only to know when to stop a
+  // single-finger stroke because a second finger just landed (Zoomer takes
+  // over the actual pan/zoom/rotate math itself).
+  const activeTouchIds = new Set();
   stageEl.addEventListener('pointerdown', (e) => {
-    state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if(state.activePointers.size === 2){
-      // A second finger landed: cancel any single-finger stroke in progress
-      // and start a pinch-zoom / 2-finger pan gesture instead.
+    activeTouchIds.add(e.pointerId);
+    if(activeTouchIds.size >= 2){
       state.drawing = false;
-      const pts = [...state.activePointers.values()];
-      state.pinch.active = true;
-      state.pinch.startDist = ptDist(pts[0], pts[1]) || 1;
-      state.pinch.startScale = state.zoom.scale;
-      state.pinch.startMid = ptMid(pts[0], pts[1]);
-      state.pinch.startTranslate = { x: state.zoom.x, y: state.zoom.y };
+      state.multiTouch = true;
     }
   });
-  stageEl.addEventListener('pointermove', (e) => {
-    if(!state.activePointers.has(e.pointerId)) return;
-    state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if(state.pinch.active && state.activePointers.size === 2){
-      const pts = [...state.activePointers.values()];
-      const newDist = ptDist(pts[0], pts[1]) || 1;
-      const newMid = ptMid(pts[0], pts[1]);
-      let newScale = state.pinch.startScale * (newDist / state.pinch.startDist);
-      newScale = Math.max(1, Math.min(5, newScale));
-      state.zoom.scale = newScale;
-      state.zoom.x = state.pinch.startTranslate.x + (newMid.x - state.pinch.startMid.x);
-      state.zoom.y = state.pinch.startTranslate.y + (newMid.y - state.pinch.startMid.y);
-      clampPan();
-      applyZoomTransform();
-      e.preventDefault();
-    }
-  });
-  function stagePointerEnd(e){
-    state.activePointers.delete(e.pointerId);
-    if(state.activePointers.size < 2){
-      state.pinch.active = false;
-    }
+  function stageTouchEnd(e){
+    activeTouchIds.delete(e.pointerId);
+    if(activeTouchIds.size < 2) state.multiTouch = false;
   }
-  stageEl.addEventListener('pointerup', stagePointerEnd);
-  stageEl.addEventListener('pointercancel', stagePointerEnd);
-  stageEl.addEventListener('pointerleave', stagePointerEnd);
+  stageEl.addEventListener('pointerup', stageTouchEnd);
+  stageEl.addEventListener('pointercancel', stageTouchEnd);
+  stageEl.addEventListener('pointerleave', stageTouchEnd);
 
   /* ---------------- Drawing ---------------- */
-  function getPos(e, canvas){
-    const rect = canvas.getBoundingClientRect();
-    // rect is the on-screen (post CSS-transform) box; divide out the zoom
-    // scale so drawing coordinates stay in the canvas's own pixel space.
-    const s = state.zoom.scale || 1;
-    return { x: (e.clientX - rect.left) / s, y: (e.clientY - rect.top) / s };
+  // Maps a screen point back into the canvas's own untransformed pixel
+  // space, inverting Zoomer's translate + scale + rotate around the
+  // stage's center (Zoomer's default transform-origin).
+  function screenToLocal(clientX, clientY){
+    const stageRect = stageEl.getBoundingClientRect();
+    const cx = stageRect.left + stageRect.width / 2;
+    const cy = stageRect.top + stageRect.height / 2;
+    const z = (canvasZoomer && canvasZoomer.state) || { x:0, y:0, scale:1, rotation:0 };
+    const scale = z.scale || 1;
+    const rad = (z.rotation || 0) * Math.PI / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const dx = clientX - cx - (z.x || 0);
+    const dy = clientY - cy - (z.y || 0);
+    const u = (dx * cos + dy * sin) / scale;
+    const v = (-dx * sin + dy * cos) / scale;
+    return { x: u + state.displaySize.w / 2, y: v + state.displaySize.h / 2 };
+  }
+  function getPos(e){
+    return screenToLocal(e.clientX, e.clientY);
   }
 
   function applyBrushStyle(ctx){
@@ -1119,53 +1133,156 @@ input[type=range]::-moz-range-thumb{
     }
   }
 
-  // Renders one path (built by buildPath) with the current brush texture:
-  // 'solid' just strokes it once as-is; 'graphite' layers a few jittered,
-  // lower-alpha passes with a multiply blend for a grainy pencil look;
-  // 'ink' adds a soft blurred bleed pass under a crisp core for a wet,
-  // slightly-spreading ink look.
-  function strokeTextured(ctx, buildPath){
+  /* ---------------- Textured brushes: stamping instead of stroke() ---------------- */
+  // Instead of stroking the path with jittered passes, we walk along each
+  // short segment and stamp individual dabs (rotated to the stroke's
+  // direction, with a little jitter) — the same idea real brush engines use,
+  // just built from procedural shapes instead of an external PNG tip so it
+  // keeps working with any brush color the user picks.
+  function quadPoint(p0, p1, p2, t){
+    const mt = 1 - t;
+    return {
+      x: mt*mt*p0.x + 2*mt*t*p1.x + t*t*p2.x,
+      y: mt*mt*p0.y + 2*mt*t*p1.y + t*t*p2.y
+    };
+  }
+  function quadTangentAngle(p0, p1, p2, t){
+    const mt = 1 - t;
+    const dx = 2*mt*(p1.x - p0.x) + 2*t*(p2.x - p1.x);
+    const dy = 2*mt*(p1.y - p0.y) + 2*t*(p2.y - p1.y);
+    return Math.atan2(dy, dx);
+  }
+  function approxQuadLength(p0, p1, p2){
+    let len = 0, prev = p0;
+    for(let i = 1; i <= 6; i++){
+      const pt = quadPoint(p0, p1, p2, i/6);
+      len += Math.hypot(pt.x - prev.x, pt.y - prev.y);
+      prev = pt;
+    }
+    return len;
+  }
+  function hexToRgba(hex, alpha){
+    const h = hex.replace('#', '');
+    const r = parseInt(h.substring(0,2), 16), g = parseInt(h.substring(2,4), 16), bch = parseInt(h.substring(4,6), 16);
+    return `rgba(${r},${g},${bch},${alpha})`;
+  }
+  // A grainy pencil fleck: a handful of small jittered ellipses per dab.
+  function stampGraphiteDab(ctx, pt, angle, size, color, baseAlpha){
+    ctx.save();
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = color;
+    const flecks = 3 + Math.floor(Math.random() * 3);
+    for(let i = 0; i < flecks; i++){
+      const rx = (Math.random() - 0.5) * size * 0.9;
+      const ry = (Math.random() - 0.5) * size * 0.5;
+      const r = size * (0.12 + Math.random() * 0.16);
+      ctx.globalAlpha = baseAlpha * (0.25 + Math.random() * 0.35);
+      ctx.beginPath();
+      ctx.ellipse(rx, ry, r, r * 0.7, Math.random() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // A soft radial-gradient blob for a wet, slightly-spreading ink dab.
+  function stampInkDab(ctx, pt, color, size, alpha){
+    const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, size);
+    grad.addColorStop(0, color);
+    grad.addColorStop(0.55, color);
+    grad.addColorStop(1, hexToRgba(color, 0));
+    const prevAlpha = ctx.globalAlpha;
+    ctx.fillStyle = grad;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = prevAlpha;
+  }
+  // Renders one short segment (a straight line for the first two points of a
+  // stroke, a quadratic curve through midpoints afterwards — same shape the
+  // app already built) with the current brush texture.
+  function strokeTexturedSegment(ctx, pts){
     const b = state.brush;
-    if(b.texture === 'solid' || !b.texture){
-      buildPath(ctx, 0, 0);
+    const isCurve = pts.length === 3;
+    if(b.eraser || b.texture === 'solid' || !b.texture){
+      ctx.beginPath();
+      if(isCurve){
+        ctx.moveTo(pts[0].x, pts[0].y);
+        ctx.quadraticCurveTo(pts[1].x, pts[1].y, pts[2].x, pts[2].y);
+      } else {
+        ctx.moveTo(pts[0].x, pts[0].y);
+        ctx.lineTo(pts[1].x, pts[1].y);
+      }
       ctx.stroke();
       return;
     }
-    const baseWidth = ctx.lineWidth;
+    const start = pts[0], ctrl = isCurve ? pts[1] : null, end = pts[pts.length - 1];
+    const length = isCurve ? approxQuadLength(start, ctrl, end) : Math.hypot(end.x - start.x, end.y - start.y);
+    const size = ctx.lineWidth;
     const baseAlpha = ctx.globalAlpha;
-
-    if(b.texture === 'ink'){
-      ctx.save();
-      ctx.filter = 'blur(1px)';
-      ctx.globalAlpha = baseAlpha * 0.30;
-      ctx.lineWidth = baseWidth * 1.7;
-      buildPath(ctx, 0, 0);
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.globalAlpha = Math.min(1, baseAlpha * 1.15);
-      ctx.lineWidth = baseWidth * 0.85;
-      buildPath(ctx, 0, 0);
-      ctx.stroke();
-    } else if(b.texture === 'graphite'){
-      const prevComposite = ctx.globalCompositeOperation;
-      // Multiply blend gives graphite its build-up look when painting, but
-      // it would fight destination-out when erasing, so skip it there.
-      if(!b.eraser) ctx.globalCompositeOperation = 'multiply';
-      const passes = 3;
-      for(let i = 0; i < passes; i++){
-        const jitter = baseWidth * 0.18;
-        const dx = (Math.random() - 0.5) * jitter;
-        const dy = (Math.random() - 0.5) * jitter;
-        ctx.globalAlpha = baseAlpha * (0.28 + Math.random() * 0.28);
-        ctx.lineWidth = baseWidth * (0.55 + Math.random() * 0.55);
-        buildPath(ctx, dx, dy);
-        ctx.stroke();
+    const color = b.color;
+    const spacing = Math.max(1.2, size * (b.texture === 'ink' ? 0.22 : 0.16));
+    const steps = Math.max(1, Math.round(length / spacing));
+    const prevComposite = ctx.globalCompositeOperation;
+    if(b.texture === 'graphite') ctx.globalCompositeOperation = 'multiply';
+    for(let i = 0; i <= steps; i++){
+      const t = i / steps;
+      const pt = isCurve ? quadPoint(start, ctrl, end, t) : { x: start.x + (end.x-start.x)*t, y: start.y + (end.y-start.y)*t };
+      const angle = isCurve ? quadTangentAngle(start, ctrl, end, t) : Math.atan2(end.y - start.y, end.x - start.x);
+      if(b.texture === 'graphite'){
+        stampGraphiteDab(ctx, pt, angle, size, color, baseAlpha);
+      } else if(b.texture === 'ink'){
+        stampInkDab(ctx, pt, color, size * 0.9, baseAlpha * 0.30);  // soft bleed
+        stampInkDab(ctx, pt, color, size * 0.5, baseAlpha * 0.90);  // crisp core
       }
-      ctx.globalCompositeOperation = prevComposite;
     }
+    ctx.globalCompositeOperation = prevComposite;
     ctx.globalAlpha = baseAlpha;
-    ctx.lineWidth = baseWidth;
+  }
+  // Appends just the newest incremental segment as a new point comes in
+  // (used for live preview while the finger/pen is still moving).
+  function appendPreviewPoint(ctx, pts){
+    const n = pts.length;
+    if(n < 2) return;
+    if(n === 2){
+      strokeTexturedSegment(ctx, [pts[0], pts[1]]);
+    } else {
+      const p0 = pts[n-3], p1 = pts[n-2], p2 = pts[n-1];
+      const mid1 = { x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2 };
+      const mid2 = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
+      strokeTexturedSegment(ctx, [mid1, p1, mid2]);
+    }
+  }
+  // Draws a full, already-finished point list in one go (used to commit the
+  // stabilized final stroke onto the real layer).
+  function drawStrokePath(ctx, points){
+    applyBrushStyle(ctx);
+    if(points.length === 0) return;
+    if(points.length === 1){
+      const p = points[0];
+      strokeTexturedSegment(ctx, [{x:p.x,y:p.y}, {x:p.x+0.01,y:p.y+0.01}]);
+      return;
+    }
+    if(points.length === 2){
+      strokeTexturedSegment(ctx, points);
+      return;
+    }
+    for(let i = 2; i < points.length; i++){
+      const p0 = points[i-2], p1 = points[i-1], p2 = points[i];
+      const mid1 = { x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2 };
+      const mid2 = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
+      strokeTexturedSegment(ctx, [mid1, p1, mid2]);
+    }
+  }
+
+  /* ---------------- Stroke stabilization (@stroke-stabilizer/core) ---------------- */
+  // Real-time smoothing while drawing (One Euro filter), plus a bidirectional
+  // gaussian post-process applied to the whole stroke once it's finished —
+  // this is what removes the "stuck"/jittery feel when switching brushes fast.
+  function makeStabilizer(){
+    return new StabilizedPointer()
+      .addFilter(oneEuroFilter({ minCutoff: 1.0, beta: 0.007 }))
+      .addPostProcess(gaussianKernel({ size: 7 }));
   }
 
   /* ---------------- Color picker (long-press on the canvas) ---------------- */
@@ -1175,10 +1292,8 @@ input[type=range]::-moz-range-thumb{
   function sampleColorAt(clientX, clientY){
     const size = state.displaySize;
     if(!size || !size.w) return null;
-    const rect = canvasStack.getBoundingClientRect();
-    const scale = state.zoom.scale || 1;
-    const x = (clientX - rect.left) / scale;
-    const y = (clientY - rect.top) / scale;
+    const pos = screenToLocal(clientX, clientY);
+    const x = pos.x, y = pos.y;
     if(x < 0 || y < 0 || x >= size.w || y >= size.h) return null;
     try{
       const tmp = document.createElement('canvas');
@@ -1232,21 +1347,27 @@ input[type=range]::-moz-range-thumb{
   drawLayers.forEach(canvas => {
     canvas.addEventListener('pointerdown', (e) => {
       if(!canvas.classList.contains('active-layer')) return;
-      if(!e.isPrimary || state.pinch.active || state.activePointers.size >= 2) return; // let 2nd finger pinch/pan instead of drawing
+      if(!e.isPrimary || state.multiTouch) return; // let 2nd finger pan/zoom instead of drawing
       canvas.setPointerCapture(e.pointerId);
 
-      const pos = getPos(e, canvas);
+      const pos = getPos(e);
       state.strokePoints = [pos];
       state.strokeStarted = false; // undo snapshot is taken lazily, only once we know this is a real stroke
       state.strokeLayerIdx = +canvas.dataset.layer;
       state.drawing = true;
+
+      // The eraser stays direct (immediate feedback matters more than
+      // smoothing there); everything else runs through the stabilizer and
+      // only commits to the real layer once the stroke finishes.
+      state.stabilizer = state.brush.eraser ? null : makeStabilizer();
+      if(state.stabilizer) state.stabilizer.process({ x: pos.x, y: pos.y, timestamp: e.timeStamp });
 
       state.pick.startClient = { x: e.clientX, y: e.clientY };
       state.pick.moved = false;
       state.pick.active = false;
       clearTimeout(state.pick.timer);
       state.pick.timer = setTimeout(() => {
-        if(state.pick.moved || state.pinch.active || !state.drawing) return;
+        if(state.pick.moved || state.multiTouch || !state.drawing) return;
         // Held still without moving: switch to picking a color instead of drawing.
         state.pick.active = true;
         state.drawing = false;
@@ -1256,7 +1377,7 @@ input[type=range]::-moz-range-thumb{
 
     canvas.addEventListener('pointermove', (e) => {
       if(!canvas.classList.contains('active-layer')) return;
-      if(!e.isPrimary || state.pinch.active) return;
+      if(!e.isPrimary || state.multiTouch) return;
 
       if(state.pick.active){
         showColorPreview(e.clientX, e.clientY);
@@ -1272,41 +1393,40 @@ input[type=range]::-moz-range-thumb{
         }
       }
 
-      const ctx = canvas.getContext('2d');
-      applyBrushStyle(ctx);
-
       // Sample coalesced sub-events when the browser provides them so fast
-      // strokes get enough points to smooth, then connect points with
-      // quadratic curves through their midpoints instead of straight
-      // segments — this is what removes the "stiff"/jagged look.
+      // strokes get enough points to smooth.
       const events = (typeof e.getCoalescedEvents === 'function' && e.getCoalescedEvents().length)
         ? e.getCoalescedEvents() : [e];
 
+      if(state.brush.eraser){
+        const ctx = canvas.getContext('2d');
+        if(!state.strokeStarted){ applyBrushStyle(ctx); }
+        events.forEach(ev => {
+          const pos = getPos(ev);
+          if(!state.strokeStarted){
+            pushUndoSnapshot(state.strokeLayerIdx);
+            state.strokeStarted = true;
+          }
+          state.strokePoints.push(pos);
+          appendPreviewPoint(ctx, state.strokePoints);
+        });
+        return;
+      }
+
+      // Live preview only — drawn on the overlay canvas with the
+      // stabilizer's real-time smoothing; the real layer isn't touched
+      // until the stroke finishes (see endStroke).
+      const previewCtx = strokePreviewCanvas.getContext('2d');
+      if(!state.strokeStarted){
+        applyBrushStyle(previewCtx);
+        state.strokeStarted = true;
+      }
       events.forEach(ev => {
-        const pos = getPos(ev, canvas);
-        const pts = state.strokePoints;
-        pts.push(pos);
-        const n = pts.length;
-        if(!state.strokeStarted){
-          pushUndoSnapshot(state.strokeLayerIdx);
-          state.strokeStarted = true;
-        }
-        if(n < 3){
-          strokeTextured(ctx, (c, dx, dy) => {
-            c.beginPath();
-            c.moveTo(pts[n-2].x + dx, pts[n-2].y + dy);
-            c.lineTo(pts[n-1].x + dx, pts[n-1].y + dy);
-          });
-        } else {
-          const p0 = pts[n-3], p1 = pts[n-2], p2 = pts[n-1];
-          const mid1 = { x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2 };
-          const mid2 = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
-          strokeTextured(ctx, (c, dx, dy) => {
-            c.beginPath();
-            c.moveTo(mid1.x + dx, mid1.y + dy);
-            c.quadraticCurveTo(p1.x + dx, p1.y + dy, mid2.x + dx, mid2.y + dy);
-          });
-        }
+        const pos = getPos(ev);
+        const smoothed = state.stabilizer ? state.stabilizer.process({ x: pos.x, y: pos.y, timestamp: ev.timeStamp }) : pos;
+        if(!smoothed) return; // rejected as noise by the filter pipeline
+        state.strokePoints.push(smoothed);
+        appendPreviewPoint(previewCtx, state.strokePoints);
       });
     });
     function endStroke(e){
@@ -1314,23 +1434,36 @@ input[type=range]::-moz-range-thumb{
       if(state.pick.active){
         const p = (e && typeof e.clientX === 'number') ? e : state.pick.startClient;
         commitColorPick(p.x, p.y);
-      } else if(state.drawing && !state.pick.moved && state.strokePoints.length){
-        // A quick tap with no movement and no long-press/pinch interruption:
-        // leave a single dot. Drawing this lazily (instead of on
-        // pointerdown) is what stops pinch-to-zoom from leaving a stray dot
-        // at the finger's landing spot.
-        pushUndoSnapshot(state.strokeLayerIdx);
-        const ctx = canvas.getContext('2d');
-        applyBrushStyle(ctx);
-        const pos = state.strokePoints[0];
-        strokeTextured(ctx, (c, dx, dy) => {
-          c.beginPath();
-          c.moveTo(pos.x + dx, pos.y + dy);
-          c.lineTo(pos.x + 0.01 + dx, pos.y + 0.01 + dy);
-        });
+      } else if(state.drawing){
+        if(state.brush.eraser){
+          if(!state.pick.moved && state.strokePoints.length){
+            // Quick tap with no movement: leave a single erased dot. Drawing
+            // this lazily (instead of on pointerdown) is what stops
+            // pinch-to-zoom from leaving a stray mark at the landing spot.
+            pushUndoSnapshot(state.strokeLayerIdx);
+            const ctx = canvas.getContext('2d');
+            applyBrushStyle(ctx);
+            const pos = state.strokePoints[0];
+            strokeTexturedSegment(ctx, [pos, { x: pos.x + 0.01, y: pos.y + 0.01 }]);
+          }
+          // Otherwise the erase was already drawn live during pointermove.
+        } else {
+          // Commit the fully stabilized + post-processed stroke to the real
+          // layer, then clear the live-preview overlay.
+          const previewCtx = strokePreviewCanvas.getContext('2d');
+          if(state.displaySize.w) previewCtx.clearRect(0, 0, state.displaySize.w, state.displaySize.h);
+          const finalPoints = state.stabilizer ? state.stabilizer.finish() : state.strokePoints;
+          const ctx = canvas.getContext('2d');
+          if(finalPoints && finalPoints.length){
+            pushUndoSnapshot(state.strokeLayerIdx);
+            drawStrokePath(ctx, finalPoints);
+          }
+        }
       }
       state.drawing = false;
       state.pick.active = false;
+      state.strokeStarted = false;
+      state.stabilizer = null;
       state.strokePoints = [];
       hideColorPreview();
     }
